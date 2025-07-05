@@ -7,7 +7,16 @@
   <img src="https://img.shields.io/badge/platform-linux-lightgrey.svg" alt="Platform">
 </div>
 
-## 📖 项目简介
+## � 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xieming1904/xiexieminaban/main/install.sh | sudo bash
+```
+
+安装完成后访问：`http://your-server-ip:3000`  
+默认用户名：`admin` 密码：`admin123`
+
+## �📖 项目简介
 
 AquaPanel 是一个现代化的服务器管理面板，采用液体玻璃设计风格，提供直观美观的用户界面。该项目使用 Node.js 作为后端，原生 HTML/CSS/JavaScript 作为前端，实现了实时的服务器监控和管理功能。
 
@@ -40,12 +49,22 @@ AquaPanel 是一个现代化的服务器管理面板，采用液体玻璃设计�
 - 至少 512MB 可用内存
 - 至少 1GB 可用磁盘空间
 
-### 一键安装
+### 在线安装（推荐）
+
+```bash
+# 一键安装
+curl -fsSL https://raw.githubusercontent.com/xieming1904/xiexieminaban/main/install.sh | sudo bash
+
+# 或使用 wget
+wget -qO- https://raw.githubusercontent.com/xieming1904/xiexieminaban/main/install.sh | sudo bash
+```
+
+### 本地安装
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-username/aquapanel.git
-cd aquapanel
+git clone https://github.com/xieming1904/xiexieminaban.git
+cd xiexieminaban
 
 # 赋予安装脚本执行权限
 chmod +x install.sh
@@ -68,8 +87,8 @@ sudo yum install nodejs npm
 
 2. **克隆项目**
 ```bash
-git clone https://github.com/your-username/aquapanel.git
-cd aquapanel
+git clone https://github.com/xieming1904/xiexieminaban.git
+cd xiexieminaban
 ```
 
 3. **安装 Node.js 依赖**
@@ -315,9 +334,9 @@ npx nodemon app.js
 
 如果您遇到问题或有建议，请：
 
-1. 查看 [Issues](https://github.com/your-username/aquapanel/issues)
+1. 查看 [Issues](https://github.com/xieming1904/xiexieminaban/issues)
 2. 创建新的 Issue
-3. 联系作者
+3. 访问项目主页：[https://github.com/xieming1904/xiexieminaban](https://github.com/xieming1904/xiexieminaban)
 
 ---
 
