@@ -1,7 +1,7 @@
 # AquaPanel - 现代化服务器管理面板
 
 <div align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.5.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/node->=16.0.0-brightgreen.svg" alt="Node Version">
   <img src="https://img.shields.io/badge/platform-linux-lightgrey.svg" alt="Platform">
