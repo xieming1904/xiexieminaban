@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # AquaPanel 在线安装脚本
-# 版本: 1.5.0
+# 版本: 1.6.0
 # 作者: AquaPanel Team
 # GitHub: https://github.com/xieming1904/xiexieminaban
 

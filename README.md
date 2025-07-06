@@ -1,7 +1,7 @@
 # AquaPanel - 现代化服务器管理面板
 
 <div align="center">
-  <img src="https://img.shields.io/badge/version-1.5.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.6.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/node->=16.0.0-brightgreen.svg" alt="Node Version">
   <img src="https://img.shields.io/badge/platform-linux-lightgrey.svg" alt="Platform">
@@ -41,6 +41,10 @@ AquaPanel 是一个现代化的服务器管理面板，采用液体玻璃设计�
 - **文件管理** - 浏览服务器文件系统，支持文件查看和预览
 - **服务管理** - 管理系统服务，支持启动、停止、重启操作
 - **Web终端** - 在线执行系统命令，支持命令历史和快捷命令
+- **网络监控** - 实时网络连接监控、端口扫描、流量统计
+- **软件包管理** - 软件包安装、卸载、搜索和状态管理
+- **定时任务管理** - crontab任务的可视化创建、编辑和管理
+- **监控告警** - 系统性能阈值告警、通知推送和历史记录
 - **用户管理** - 安全的用户认证和授权
 
 ## 🚀 快速开始
@@ -263,7 +267,11 @@ aquapanel/
 │       ├── logs.js       # 日志查看
 │       ├── files.js      # 文件管理
 │       ├── services.js   # 服务管理
-│       └── terminal.js   # Web终端
+│       ├── terminal.js   # Web终端
+│       ├── network.js    # 网络监控
+│       ├── packages.js   # 软件包管理
+│       ├── crontab.js    # 定时任务管理
+│       └── alerts.js     # 监控告警
 ├── data/                 # 数据目录
 ├── logs/                 # 日志目录
 └── backups/              # 备份目录
@@ -307,6 +315,26 @@ npx nodemon app.js
 
 #### 终端
 - `POST /api/terminal` - 执行系统命令
+
+#### 网络监控
+- `GET /api/network/connections` - 获取网络连接
+- `POST /api/network/scan` - 端口扫描
+- `GET /api/network/stats` - 获取网络统计
+
+#### 软件包管理
+- `GET /api/packages` - 获取软件包列表
+- `POST /api/packages/install` - 安装软件包
+- `POST /api/packages/remove` - 卸载软件包
+
+#### 定时任务管理
+- `GET /api/crontab` - 获取定时任务列表
+- `POST /api/crontab` - 添加定时任务
+- `DELETE /api/crontab/:id` - 删除定时任务
+
+#### 监控告警
+- `GET /api/alerts/config` - 获取告警配置
+- `PUT /api/alerts/config` - 更新告警配置
+- `GET /api/alerts/history` - 获取告警历史
 
 #### WebSocket
 - 实时性能数据推送
@@ -356,6 +384,16 @@ npx nodemon app.js
    - 关注安全公告和漏洞修复
 
 ## 📝 更新日志
+
+### v1.6.0 (2024-01-20)
+- 🌐 新增网络监控功能 - 实时连接监控、端口扫描、流量统计
+- 📦 新增软件包管理 - 软件包安装、卸载、搜索功能
+- ⏰ 新增定时任务管理 - crontab任务可视化管理
+- 🚨 新增监控告警系统 - 阈值设置、实时告警、历史记录
+- 🔔 新增通知系统 - 浏览器通知、页面通知
+- 📊 优化系统性能监控
+- 🎨 增强UI组件和交互体验
+- 🔒 进一步完善安全机制
 
 ### v1.5.0 (2024-01-15)
 - 🎉 新增进程管理功能
