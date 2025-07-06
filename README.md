@@ -1,7 +1,7 @@
 # AquaPanel - 现代化服务器管理面板
 
 <div align="center">
-  <img src="https://img.shields.io/badge/version-1.6.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.7.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/node->=16.0.0-brightgreen.svg" alt="Node Version">
   <img src="https://img.shields.io/badge/platform-linux-lightgrey.svg" alt="Platform">
@@ -45,6 +45,10 @@ AquaPanel 是一个现代化的服务器管理面板，采用液体玻璃设计�
 - **软件包管理** - 软件包安装、卸载、搜索和状态管理
 - **定时任务管理** - crontab任务的可视化创建、编辑和管理
 - **监控告警** - 系统性能阈值告警、通知推送和历史记录
+- **备份管理** - 系统配置、数据和完整备份的创建、下载和管理
+- **Docker容器管理** - 容器和镜像的实时监控、生命周期管理
+- **性能分析** - 深度系统性能分析、进程资源监控、I/O统计
+- **安全扫描** - 全面的系统安全检查、漏洞扫描和安全报告
 - **用户管理** - 安全的用户认证和授权
 
 ## 🚀 快速开始
@@ -271,7 +275,11 @@ aquapanel/
 │       ├── network.js    # 网络监控
 │       ├── packages.js   # 软件包管理
 │       ├── crontab.js    # 定时任务管理
-│       └── alerts.js     # 监控告警
+│       ├── alerts.js     # 监控告警
+│       ├── backup.js     # 备份管理
+│       ├── docker.js     # Docker容器管理
+│       ├── performance.js # 性能分析
+│       └── security.js   # 安全扫描
 ├── data/                 # 数据目录
 ├── logs/                 # 日志目录
 └── backups/              # 备份目录
@@ -336,6 +344,25 @@ npx nodemon app.js
 - `PUT /api/alerts/config` - 更新告警配置
 - `GET /api/alerts/history` - 获取告警历史
 
+#### 系统备份管理
+- `GET /api/backup/list` - 获取备份文件列表
+- `POST /api/backup/create` - 创建新备份
+- `GET /api/backup/download/:filename` - 下载备份文件
+- `DELETE /api/backup/:filename` - 删除备份文件
+
+#### Docker容器管理
+- `GET /api/docker/containers` - 获取容器列表
+- `GET /api/docker/images` - 获取镜像列表
+- `POST /api/docker/container/:id/:action` - 容器操作
+
+#### 性能分析
+- `GET /api/performance/history` - 获取性能历史数据
+- `GET /api/performance/top-processes` - 获取资源使用Top10进程
+- `GET /api/performance/io-stats` - 获取I/O和虚拟内存统计
+
+#### 安全扫描
+- `GET /api/security/scan` - 执行系统安全扫描
+
 #### WebSocket
 - 实时性能数据推送
 - 实时进程数据推送
@@ -384,6 +411,16 @@ npx nodemon app.js
    - 关注安全公告和漏洞修复
 
 ## 📝 更新日志
+
+### v1.7.0 (2024-12-20)
+- 💾 新增系统备份管理 - 支持系统配置、数据和完整备份
+- 🐳 新增Docker容器管理 - 容器状态监控和生命周期管理
+- 📈 新增性能分析功能 - 深度系统性能分析和进程监控
+- 🔐 新增安全扫描系统 - 全面的系统安全检查和报告
+- 📊 增强系统监控图表 - SVG图表和数据可视化
+- 🎨 优化用户界面设计 - 新增标签页、进度条等组件
+- 🔧 完善模块化架构 - 改进代码结构和维护性
+- 🛡️ 加强安全机制 - 增强权限控制和操作审计
 
 ### v1.6.0 (2024-01-20)
 - 🌐 新增网络监控功能 - 实时连接监控、端口扫描、流量统计

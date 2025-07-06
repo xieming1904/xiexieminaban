@@ -855,6 +855,506 @@ app.get('/api/alerts/history', authenticateToken, async (req, res) => {
     }
 });
 
+// 系统备份管理 - 获取备份列表
+app.get('/api/backup/list', authenticateToken, async (req, res) => {
+    try {
+        const backupDir = path.join(__dirname, 'backups');
+        if (!fs.existsSync(backupDir)) {
+            fs.mkdirSync(backupDir, { recursive: true });
+        }
+        
+        const files = fs.readdirSync(backupDir);
+        const backups = [];
+        
+        for (const file of files) {
+            if (file.endsWith('.tar.gz') || file.endsWith('.zip')) {
+                const filePath = path.join(backupDir, file);
+                const stats = fs.statSync(filePath);
+                backups.push({
+                    name: file,
+                    size: stats.size,
+                    created: stats.mtime,
+                    type: file.endsWith('.tar.gz') ? 'system' : 'data'
+                });
+            }
+        }
+        
+        backups.sort((a, b) => new Date(b.created) - new Date(a.created));
+        res.json({ backups });
+    } catch (error) {
+        res.status(500).json({ error: '获取备份列表失败: ' + error.message });
+    }
+});
+
+// 系统备份管理 - 创建备份
+app.post('/api/backup/create', authenticateToken, async (req, res) => {
+    const { type, description } = req.body;
+    
+    // 仅管理员可以创建备份
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: '权限不足' });
+    }
+    
+    try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupDir = path.join(__dirname, 'backups');
+        
+        if (!fs.existsSync(backupDir)) {
+            fs.mkdirSync(backupDir, { recursive: true });
+        }
+        
+        let command;
+        let filename;
+        
+        if (type === 'system') {
+            filename = `system-backup-${timestamp}.tar.gz`;
+            // 备份重要系统配置
+            command = `tar -czf ${path.join(backupDir, filename)} -C / etc/passwd etc/group etc/shadow etc/hosts etc/hostname etc/crontab etc/fstab 2>/dev/null || true`;
+        } else if (type === 'data') {
+            filename = `data-backup-${timestamp}.tar.gz`;
+            // 备份应用数据
+            command = `tar -czf ${path.join(backupDir, filename)} -C ${__dirname} data logs config.json package.json`;
+        } else if (type === 'full') {
+            filename = `full-backup-${timestamp}.tar.gz`;
+            // 完整备份
+            command = `tar -czf ${path.join(backupDir, filename)} -C ${__dirname} . --exclude=node_modules --exclude=backups`;
+        } else {
+            return res.status(400).json({ error: '无效的备份类型' });
+        }
+        
+        const { stdout, stderr } = await execAsync(command, { timeout: 300000 }); // 5分钟超时
+        
+        logActivity(req.user.username, 'backup_create', `${type}: ${filename}`);
+        res.json({ 
+            message: '备份创建成功',
+            filename: filename,
+            output: stdout + (stderr ? '\nSTDERR:\n' + stderr : '')
+        });
+    } catch (error) {
+        logActivity(req.user.username, 'backup_create_failed', `${type}: ${error.message}`);
+        res.status(500).json({ error: '创建备份失败: ' + error.message });
+    }
+});
+
+// 系统备份管理 - 下载备份
+app.get('/api/backup/download/:filename', authenticateToken, (req, res) => {
+    const { filename } = req.params;
+    
+    // 安全检查文件名
+    if (filename.includes('..') || filename.includes('/')) {
+        return res.status(400).json({ error: '无效的文件名' });
+    }
+    
+    const filePath = path.join(__dirname, 'backups', filename);
+    
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: '备份文件不存在' });
+    }
+    
+    logActivity(req.user.username, 'backup_download', filename);
+    res.download(filePath);
+});
+
+// 系统备份管理 - 删除备份
+app.delete('/api/backup/:filename', authenticateToken, async (req, res) => {
+    const { filename } = req.params;
+    
+    // 仅管理员可以删除备份
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: '权限不足' });
+    }
+    
+    // 安全检查文件名
+    if (filename.includes('..') || filename.includes('/')) {
+        return res.status(400).json({ error: '无效的文件名' });
+    }
+    
+    try {
+        const filePath = path.join(__dirname, 'backups', filename);
+        
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: '备份文件不存在' });
+        }
+        
+        fs.unlinkSync(filePath);
+        
+        logActivity(req.user.username, 'backup_delete', filename);
+        res.json({ message: '备份删除成功' });
+    } catch (error) {
+        logActivity(req.user.username, 'backup_delete_failed', `${filename}: ${error.message}`);
+        res.status(500).json({ error: '删除备份失败: ' + error.message });
+    }
+});
+
+// Docker容器管理 - 获取容器列表
+app.get('/api/docker/containers', authenticateToken, async (req, res) => {
+    try {
+        // 检查Docker是否安装
+        await execAsync('which docker');
+        
+        const { stdout } = await execAsync('docker ps -a --format "table {{.ID}}\\t{{.Image}}\\t{{.Command}}\\t{{.CreatedAt}}\\t{{.Status}}\\t{{.Ports}}\\t{{.Names}}"');
+        
+        const lines = stdout.split('\n').filter(line => line.trim() && !line.includes('CONTAINER ID'));
+        const containers = lines.map(line => {
+            const parts = line.split('\t');
+            if (parts.length >= 7) {
+                return {
+                    id: parts[0],
+                    image: parts[1],
+                    command: parts[2],
+                    created: parts[3],
+                    status: parts[4],
+                    ports: parts[5],
+                    name: parts[6]
+                };
+            }
+            return null;
+        }).filter(container => container !== null);
+        
+        res.json({ containers });
+    } catch (error) {
+        if (error.message.includes('which docker')) {
+            res.status(404).json({ error: 'Docker未安装或不在PATH中' });
+        } else {
+            res.status(500).json({ error: '获取容器列表失败: ' + error.message });
+        }
+    }
+});
+
+// Docker容器管理 - 获取镜像列表
+app.get('/api/docker/images', authenticateToken, async (req, res) => {
+    try {
+        const { stdout } = await execAsync('docker images --format "table {{.Repository}}\\t{{.Tag}}\\t{{.ID}}\\t{{.CreatedAt}}\\t{{.Size}}"');
+        
+        const lines = stdout.split('\n').filter(line => line.trim() && !line.includes('REPOSITORY'));
+        const images = lines.map(line => {
+            const parts = line.split('\t');
+            if (parts.length >= 5) {
+                return {
+                    repository: parts[0],
+                    tag: parts[1],
+                    id: parts[2],
+                    created: parts[3],
+                    size: parts[4]
+                };
+            }
+            return null;
+        }).filter(image => image !== null);
+        
+        res.json({ images });
+    } catch (error) {
+        res.status(500).json({ error: '获取镜像列表失败: ' + error.message });
+    }
+});
+
+// Docker容器管理 - 容器操作
+app.post('/api/docker/container/:id/:action', authenticateToken, async (req, res) => {
+    const { id, action } = req.params;
+    
+    // 仅管理员可以操作容器
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: '权限不足' });
+    }
+    
+    const allowedActions = ['start', 'stop', 'restart', 'remove'];
+    if (!allowedActions.includes(action)) {
+        return res.status(400).json({ error: '无效的操作' });
+    }
+    
+    try {
+        let command = `docker ${action} ${id}`;
+        if (action === 'remove') {
+            command = `docker rm ${id}`;
+        }
+        
+        const { stdout, stderr } = await execAsync(command);
+        
+        logActivity(req.user.username, 'docker_container_action', `${action}: ${id}`);
+        res.json({ 
+            message: `容器${action}操作成功`,
+            output: stdout + (stderr ? '\nSTDERR:\n' + stderr : '')
+        });
+    } catch (error) {
+        logActivity(req.user.username, 'docker_container_action_failed', `${action}: ${id}, Error: ${error.message}`);
+        res.status(500).json({ error: `容器${action}操作失败: ` + error.message });
+    }
+});
+
+// 性能分析 - 获取系统负载历史
+app.get('/api/performance/history', authenticateToken, async (req, res) => {
+    try {
+        const { hours = 24 } = req.query;
+        const performanceFile = path.join(__dirname, 'data', 'performance_history.json');
+        let performanceHistory = [];
+        
+        if (fs.existsSync(performanceFile)) {
+            performanceHistory = JSON.parse(fs.readFileSync(performanceFile, 'utf8'));
+        }
+        
+        // 过滤指定时间范围内的数据
+        const cutoffTime = new Date(Date.now() - hours * 60 * 60 * 1000);
+        const filteredHistory = performanceHistory.filter(record => 
+            new Date(record.timestamp) > cutoffTime
+        );
+        
+        res.json({ history: filteredHistory });
+    } catch (error) {
+        res.status(500).json({ error: '获取性能历史失败: ' + error.message });
+    }
+});
+
+// 性能分析 - 获取进程资源使用Top10
+app.get('/api/performance/top-processes', authenticateToken, async (req, res) => {
+    try {
+        const { stdout } = await execAsync('ps aux --sort=-%cpu | head -11');
+        const lines = stdout.split('\n').filter(line => line.trim()).slice(1); // 跳过标题行
+        
+        const processes = lines.map(line => {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 11) {
+                return {
+                    user: parts[0],
+                    pid: parts[1],
+                    cpu: parseFloat(parts[2]),
+                    memory: parseFloat(parts[3]),
+                    vsz: parts[4],
+                    rss: parts[5],
+                    tty: parts[6],
+                    stat: parts[7],
+                    start: parts[8],
+                    time: parts[9],
+                    command: parts.slice(10).join(' ')
+                };
+            }
+            return null;
+        }).filter(proc => proc !== null);
+        
+        res.json({ processes });
+    } catch (error) {
+        res.status(500).json({ error: '获取进程资源使用失败: ' + error.message });
+    }
+});
+
+// 性能分析 - 获取IO统计
+app.get('/api/performance/io-stats', authenticateToken, async (req, res) => {
+    try {
+        const [iostat, vmstat] = await Promise.all([
+            execAsync('iostat -x 1 1').catch(() => ({ stdout: '' })),
+            execAsync('vmstat 1 2').catch(() => ({ stdout: '' }))
+        ]);
+        
+        let ioData = [];
+        let vmData = {};
+        
+        // 解析iostat输出
+        if (iostat.stdout) {
+            const lines = iostat.stdout.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes('Device')) {
+                    for (let j = i + 1; j < lines.length; j++) {
+                        const line = lines[j].trim();
+                        if (line) {
+                            const parts = line.split(/\s+/);
+                            if (parts.length >= 10) {
+                                ioData.push({
+                                    device: parts[0],
+                                    tps: parseFloat(parts[1]) || 0,
+                                    read_kb: parseFloat(parts[2]) || 0,
+                                    write_kb: parseFloat(parts[3]) || 0,
+                                    util: parseFloat(parts[9]) || 0
+                                });
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        
+        // 解析vmstat输出
+        if (vmstat.stdout) {
+            const lines = vmstat.stdout.split('\n').filter(line => line.trim());
+            const lastLine = lines[lines.length - 1];
+            if (lastLine) {
+                const parts = lastLine.trim().split(/\s+/);
+                if (parts.length >= 16) {
+                    vmData = {
+                        runnable: parseInt(parts[0]) || 0,
+                        blocked: parseInt(parts[1]) || 0,
+                        swapped: parseInt(parts[2]) || 0,
+                        free_memory: parseInt(parts[3]) || 0,
+                        buffer_memory: parseInt(parts[4]) || 0,
+                        cache_memory: parseInt(parts[5]) || 0,
+                        swap_in: parseInt(parts[6]) || 0,
+                        swap_out: parseInt(parts[7]) || 0,
+                        blocks_in: parseInt(parts[8]) || 0,
+                        blocks_out: parseInt(parts[9]) || 0,
+                        interrupts: parseInt(parts[10]) || 0,
+                        context_switches: parseInt(parts[11]) || 0,
+                        user_time: parseInt(parts[12]) || 0,
+                        system_time: parseInt(parts[13]) || 0,
+                        idle_time: parseInt(parts[14]) || 0,
+                        wait_time: parseInt(parts[15]) || 0
+                    };
+                }
+            }
+        }
+        
+        res.json({ io: ioData, vm: vmData });
+    } catch (error) {
+        res.status(500).json({ error: '获取IO统计失败: ' + error.message });
+    }
+});
+
+// 安全扫描 - 系统安全检查
+app.get('/api/security/scan', authenticateToken, async (req, res) => {
+    // 仅管理员可以执行安全扫描
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: '权限不足' });
+    }
+    
+    try {
+        const securityChecks = [];
+        
+        // 检查防火墙状态
+        try {
+            const ufwStatus = await execAsync('ufw status');
+            securityChecks.push({
+                category: 'firewall',
+                name: 'UFW防火墙状态',
+                status: ufwStatus.stdout.includes('Status: active') ? 'good' : 'warning',
+                message: ufwStatus.stdout.includes('Status: active') ? '防火墙已启用' : '防火墙未启用',
+                recommendation: ufwStatus.stdout.includes('Status: active') ? '' : '建议启用UFW防火墙'
+            });
+        } catch (error) {
+            securityChecks.push({
+                category: 'firewall',
+                name: '防火墙状态',
+                status: 'warning',
+                message: '无法检查防火墙状态',
+                recommendation: '请检查防火墙配置'
+            });
+        }
+        
+        // 检查SSH配置
+        try {
+            const sshConfig = fs.readFileSync('/etc/ssh/sshd_config', 'utf8');
+            const rootLogin = sshConfig.includes('PermitRootLogin no');
+            const passwordAuth = !sshConfig.includes('PasswordAuthentication yes');
+            
+            securityChecks.push({
+                category: 'ssh',
+                name: 'SSH Root登录',
+                status: rootLogin ? 'good' : 'critical',
+                message: rootLogin ? 'Root登录已禁用' : 'Root登录已启用',
+                recommendation: rootLogin ? '' : '建议禁用SSH Root登录'
+            });
+            
+            securityChecks.push({
+                category: 'ssh',
+                name: 'SSH密码认证',
+                status: passwordAuth ? 'warning' : 'good',
+                message: passwordAuth ? '密码认证已禁用' : '密码认证已启用',
+                recommendation: passwordAuth ? '确保已配置密钥认证' : '建议使用密钥认证'
+            });
+        } catch (error) {
+            securityChecks.push({
+                category: 'ssh',
+                name: 'SSH配置',
+                status: 'warning',
+                message: '无法读取SSH配置',
+                recommendation: '请检查SSH配置文件权限'
+            });
+        }
+        
+        // 检查系统更新
+        try {
+            if (await execAsync('which apt').then(() => true).catch(() => false)) {
+                const updates = await execAsync('apt list --upgradable 2>/dev/null | wc -l');
+                const updateCount = parseInt(updates.stdout) - 1; // 减去标题行
+                
+                securityChecks.push({
+                    category: 'updates',
+                    name: '系统更新',
+                    status: updateCount > 0 ? 'warning' : 'good',
+                    message: updateCount > 0 ? `有${updateCount}个软件包可更新` : '系统已是最新',
+                    recommendation: updateCount > 0 ? '建议及时更新系统软件包' : ''
+                });
+            }
+        } catch (error) {
+            securityChecks.push({
+                category: 'updates',
+                name: '系统更新',
+                status: 'warning',
+                message: '无法检查系统更新状态',
+                recommendation: '请手动检查系统更新'
+            });
+        }
+        
+        // 检查登录失败记录
+        try {
+            const failedLogins = await execAsync('grep "Failed password" /var/log/auth.log | tail -10');
+            const recentFails = failedLogins.stdout.split('\n').filter(line => line.trim()).length;
+            
+            securityChecks.push({
+                category: 'auth',
+                name: '登录安全',
+                status: recentFails > 5 ? 'critical' : recentFails > 0 ? 'warning' : 'good',
+                message: recentFails > 0 ? `检测到${recentFails}次失败登录` : '无异常登录记录',
+                recommendation: recentFails > 5 ? '建议检查暴力破解攻击并配置fail2ban' : ''
+            });
+        } catch (error) {
+            securityChecks.push({
+                category: 'auth',
+                name: '登录安全',
+                status: 'info',
+                message: '无法读取认证日志',
+                recommendation: '请检查日志文件权限'
+            });
+        }
+        
+        // 检查开放端口
+        try {
+            const openPorts = await execAsync('ss -tlnp');
+            const ports = openPorts.stdout.split('\n')
+                .filter(line => line.includes(':'))
+                .map(line => {
+                    const match = line.match(/:(\d+)\s/);
+                    return match ? parseInt(match[1]) : null;
+                })
+                .filter(port => port !== null && port < 65536);
+            
+            const uniquePorts = [...new Set(ports)];
+            const dangerousPorts = uniquePorts.filter(port => 
+                [21, 23, 25, 53, 80, 110, 143, 993, 995].includes(port)
+            );
+            
+            securityChecks.push({
+                category: 'network',
+                name: '开放端口',
+                status: dangerousPorts.length > 0 ? 'warning' : 'good',
+                message: `检测到${uniquePorts.length}个开放端口`,
+                recommendation: dangerousPorts.length > 0 ? 
+                    `发现可能不安全的端口: ${dangerousPorts.join(', ')}` : 
+                    '端口配置合理'
+            });
+        } catch (error) {
+            securityChecks.push({
+                category: 'network',
+                name: '端口扫描',
+                status: 'warning',
+                message: '无法检查开放端口',
+                recommendation: '请手动检查网络配置'
+            });
+        }
+        
+        logActivity(req.user.username, 'security_scan', `检查项目: ${securityChecks.length}`);
+        res.json({ checks: securityChecks });
+    } catch (error) {
+        res.status(500).json({ error: '安全扫描失败: ' + error.message });
+    }
+});
+
 // WebSocket连接处理
 wss.on('connection', (ws) => {
     console.log('WebSocket连接建立');
