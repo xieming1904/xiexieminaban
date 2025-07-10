@@ -10,6 +10,17 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const nodemailer = require('nodemailer');
+const sqlite3 = require('sqlite3').verbose();
+const { v4: uuidv4 } = require('uuid');
+const Joi = require('joi');
+const helmet = require('helmet');
+
+// 引入自定义模块
+const DatabaseManager = require('./lib/database');
+const AlertSystem = require('./lib/alerts');
+const UserManager = require('./lib/users');
+const PluginManager = require('./lib/plugins');
 
 const app = express();
 const server = http.createServer(app);
@@ -26,10 +37,32 @@ const CONFIG = {
     LOGIN_LOCKOUT_TIME: 15 * 60 * 1000, // 15分钟
     DATA_DIR: path.join(__dirname, 'data'),
     USERS_FILE: path.join(__dirname, 'data', 'users.json'),
-    LOGS_FILE: path.join(__dirname, 'data', 'logs.json')
+    LOGS_FILE: path.join(__dirname, 'data', 'logs.json'),
+    DATABASE_FILE: path.join(__dirname, 'data', 'aquapanel.db'),
+    ALERTS_CONFIG_FILE: path.join(__dirname, 'data', 'alerts.json'),
+    PLUGINS_DIR: path.join(__dirname, 'plugins'),
+    NOTIFICATION_EMAIL: process.env.NOTIFICATION_EMAIL || '',
+    SMTP_CONFIG: {
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: process.env.SMTP_PORT || 587,
+        secure: false,
+        auth: {
+            user: process.env.SMTP_USER || '',
+            pass: process.env.SMTP_PASS || ''
+        }
+    },
+    ALERT_THRESHOLDS: {
+        cpu: 80,
+        memory: 85,
+        disk: 90,
+        temperature: 75
+    }
 };
 
 // 中间件配置优化
+app.use(helmet({
+    contentSecurityPolicy: false // 允许内联脚本和样式
+}));
 app.use(cors({
     origin: process.env.NODE_ENV === 'production' ? false : '*',
     credentials: true
@@ -88,6 +121,12 @@ const loginAttempts = new Map();
 let systemInfo = {};
 let users = {};
 
+// 模块实例
+let database;
+let alertSystem;
+let userManager;
+let pluginManager;
+
 // 错误日志记录
 async function logError(error, context = '') {
     const timestamp = new Date().toISOString();
@@ -120,28 +159,42 @@ async function logError(error, context = '') {
     console.error(`[${timestamp}] ${context}:`, error);
 }
 
-// 初始化数据目录和用户
+// 初始化数据和模块
 async function initializeData() {
     try {
         if (!fsSync.existsSync(CONFIG.DATA_DIR)) {
             await fs.mkdir(CONFIG.DATA_DIR, { recursive: true });
         }
 
-        if (fsSync.existsSync(CONFIG.USERS_FILE)) {
-            const userData = await fs.readFile(CONFIG.USERS_FILE, 'utf8');
-            users = JSON.parse(userData);
-        } else {
-            // 创建默认管理员用户
-            users.admin = {
-                password: await bcrypt.hash('admin123', 12), // 增强加密强度
-                role: 'admin',
-                created: new Date().toISOString(),
-                lastLogin: null,
-                loginAttempts: 0,
-                lockedUntil: null
-            };
-            await fs.writeFile(CONFIG.USERS_FILE, JSON.stringify(users, null, 2));
+        // 初始化数据库
+        database = new DatabaseManager(CONFIG.DATABASE_FILE);
+        await database.initialize();
+        
+        // 初始化告警系统
+        alertSystem = new AlertSystem(database, CONFIG);
+        
+        // 初始化用户管理
+        userManager = new UserManager(database, CONFIG);
+        
+        // 初始化插件系统
+        pluginManager = new PluginManager(database, CONFIG);
+        
+        // 创建默认管理员用户（如果数据库中不存在）
+        const adminUser = await database.getUser('admin');
+        if (!adminUser) {
+            await userManager.createUser({
+                username: 'admin',
+                password: 'admin123',
+                email: 'admin@aquapanel.local',
+                role: 'admin'
+            });
+            console.log('默认管理员用户已创建: admin/admin123');
         }
+        
+        // 加载插件
+        await pluginManager.loadAllPlugins();
+
+        console.log('数据库和模块初始化完成');
     } catch (error) {
         await logError(error, '初始化数据');
         process.exit(1);
@@ -397,68 +450,20 @@ app.get('/', (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const userAgent = req.get('User-Agent');
         
-        if (!username || !password) {
-            return res.status(400).json({ 
-                error: '用户名和密码不能为空',
-                code: 'MISSING_CREDENTIALS'
-            });
-        }
+        const result = await userManager.loginUser(username, password, ipAddress, userAgent);
         
-        if (!checkLoginAttempts(username)) {
-            return res.status(429).json({ 
-                error: '登录失败次数过多，请稍后再试',
-                code: 'TOO_MANY_ATTEMPTS'
-            });
-        }
+        // 触发插件钩子
+        await pluginManager.callHook('user_login', { username, ipAddress, userAgent });
         
-        if (!users[username]) {
-            recordLoginFailure(username);
-            return res.status(401).json({ 
-                error: '用户不存在',
-                code: 'USER_NOT_FOUND'
-            });
-        }
-        
-        const isPasswordValid = await bcrypt.compare(password, users[username].password);
-        if (!isPasswordValid) {
-            recordLoginFailure(username);
-            return res.status(401).json({ 
-                error: '密码错误',
-                code: 'INVALID_PASSWORD'
-            });
-        }
-        
-        // 登录成功，清除失败记录
-        loginAttempts.delete(username);
-        
-        // 更新最后登录时间
-        users[username].lastLogin = new Date().toISOString();
-        await fs.writeFile(CONFIG.USERS_FILE, JSON.stringify(users, null, 2));
-        
-        const token = jwt.sign(
-            { 
-                username, 
-                role: users[username].role,
-                iat: Math.floor(Date.now() / 1000)
-            },
-            CONFIG.JWT_SECRET,
-            { expiresIn: '24h' }
-        );
-        
-        res.json({ 
-            token, 
-            user: { 
-                username, 
-                role: users[username].role,
-                lastLogin: users[username].lastLogin
-            }
-        });
+        res.json(result);
     } catch (error) {
-        await logError(error, '登录处理');
-        res.status(500).json({ 
-            error: '服务器内部错误',
-            code: 'INTERNAL_ERROR'
+        await database.logMessage('error', '登录失败: ' + error.message, 'authentication');
+        res.status(400).json({ 
+            error: error.message,
+            code: 'LOGIN_FAILED'
         });
     }
 });
@@ -508,19 +513,161 @@ app.get('/api/performance', authenticateToken, async (req, res) => {
 // 获取系统日志接口
 app.get('/api/logs', authenticateToken, async (req, res) => {
     try {
-        if (fsSync.existsSync(CONFIG.LOGS_FILE)) {
-            const logData = await fs.readFile(CONFIG.LOGS_FILE, 'utf8');
-            const logs = JSON.parse(logData);
-            res.json(logs.slice(-100)); // 返回最新100条日志
-        } else {
-            res.json([]);
-        }
+        const { limit = 100, offset = 0, level } = req.query;
+        const logs = await database.getLogs(parseInt(limit), parseInt(offset), level);
+        res.json(logs);
     } catch (error) {
-        await logError(error, '获取日志接口');
+        await database.logMessage('error', '获取日志失败: ' + error.message, 'api');
         res.status(500).json({ 
             error: '获取日志失败',
             code: 'LOGS_ERROR'
         });
+    }
+});
+
+// 用户管理API
+app.get('/api/users', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const { page = 1, limit = 20, role } = req.query;
+        const result = await userManager.getUserList(parseInt(page), parseInt(limit), role);
+        res.json(result);
+    } catch (error) {
+        await database.logMessage('error', '获取用户列表失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取用户列表失败' });
+    }
+});
+
+app.post('/api/users', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const result = await userManager.createUser(req.body, req.user.role);
+        res.json(result);
+    } catch (error) {
+        await database.logMessage('error', '创建用户失败: ' + error.message, 'api');
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// 告警管理API
+app.get('/api/alerts/rules', authenticateToken, async (req, res) => {
+    try {
+        const rules = await alertSystem.getRules();
+        res.json(rules);
+    } catch (error) {
+        await database.logMessage('error', '获取告警规则失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取告警规则失败' });
+    }
+});
+
+app.post('/api/alerts/rules', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const result = await alertSystem.createRule(req.body, req.user.userId);
+        res.json(result);
+    } catch (error) {
+        await database.logMessage('error', '创建告警规则失败: ' + error.message, 'api');
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.get('/api/alerts/history', authenticateToken, async (req, res) => {
+    try {
+        const { limit = 50, ruleId } = req.query;
+        const history = await alertSystem.getAlertHistory(parseInt(limit), ruleId);
+        res.json(history);
+    } catch (error) {
+        await database.logMessage('error', '获取告警历史失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取告警历史失败' });
+    }
+});
+
+// 插件管理API
+app.get('/api/plugins', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const plugins = pluginManager.getPluginList();
+        res.json(plugins);
+    } catch (error) {
+        await database.logMessage('error', '获取插件列表失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取插件列表失败' });
+    }
+});
+
+app.post('/api/plugins/:name/enable', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const result = await pluginManager.enablePlugin(req.params.name);
+        res.json(result);
+    } catch (error) {
+        await database.logMessage('error', '启用插件失败: ' + error.message, 'api');
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/plugins/:name/disable', authenticateToken, async (req, res) => {
+    try {
+        if (!userManager.hasPermission(req.user.role, 'admin')) {
+            return res.status(403).json({ error: '权限不足' });
+        }
+        
+        const result = await pluginManager.disablePlugin(req.params.name);
+        res.json(result);
+    } catch (error) {
+        await database.logMessage('error', '禁用插件失败: ' + error.message, 'api');
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// 性能历史数据API
+app.get('/api/performance/history', authenticateToken, async (req, res) => {
+    try {
+        const { hours = 24 } = req.query;
+        const history = await database.getPerformanceHistory(parseInt(hours));
+        res.json(history);
+    } catch (error) {
+        await database.logMessage('error', '获取性能历史失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取性能历史失败' });
+    }
+});
+
+// 系统统计API
+app.get('/api/stats', authenticateToken, async (req, res) => {
+    try {
+        const [userStats, alertStats, pluginStats] = await Promise.all([
+            userManager.getUserStats(),
+            alertSystem.getAlertStats(),
+            Promise.resolve(pluginManager.getStats())
+        ]);
+        
+        res.json({
+            users: userStats,
+            alerts: alertStats,
+            plugins: pluginStats,
+            system: {
+                uptime: process.uptime(),
+                memory: process.memoryUsage(),
+                version: '1.2.0-enterprise'
+            }
+        });
+    } catch (error) {
+        await database.logMessage('error', '获取统计数据失败: ' + error.message, 'api');
+        res.status(500).json({ error: '获取统计数据失败' });
     }
 });
 
@@ -540,10 +687,30 @@ wss.on('connection', (ws, req) => {
                 try {
                     const data = await getPerformanceData();
                     if (data) {
+                        // 发送性能数据
                         ws.send(JSON.stringify({ type: 'performance', data }));
+                        
+                        // 触发插件钩子
+                        await pluginManager.callHook('performance_data', data);
+                        
+                        // 检查告警
+                        await alertSystem.checkAlerts(data);
+                        
+                        // 记录性能历史（每分钟记录一次）
+                        if (Date.now() % 60000 < CONFIG.WS_UPDATE_INTERVAL) {
+                            await database.recordPerformance({
+                                cpu_usage: data.cpu?.usage,
+                                memory_usage: data.memory?.usage,
+                                disk_usage: data.disk?.usage || 0,
+                                network_in: data.network?.[0]?.rx_sec || 0,
+                                network_out: data.network?.[0]?.tx_sec || 0,
+                                temperature: null,
+                                load_average: data.cpu?.cores?.reduce((sum, core) => sum + core.load, 0) / (data.cpu?.cores?.length || 1)
+                            });
+                        }
                     }
                 } catch (error) {
-                    await logError(error, 'WebSocket性能数据发送');
+                    await database.logMessage('error', 'WebSocket性能数据发送失败: ' + error.message, 'websocket');
                 }
             } else {
                 clearInterval(performanceInterval);
@@ -595,42 +762,83 @@ cron.schedule('*/10 * * * *', async () => {
         systemInfo = await getSystemInfo();
         console.log('系统信息已更新');
     } catch (error) {
-        await logError(error, '定期更新系统信息');
+        await database.logMessage('error', '定期更新系统信息失败: ' + error.message, 'system');
     }
 });
 
 // 缓存清理任务
-cron.schedule('*/5 * * * *', () => {
-    cache.cleanup();
-    console.log('缓存清理完成');
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        cache.cleanup();
+        alertSystem.cleanupActiveAlerts();
+        await userManager.cleanupExpiredSessions();
+        console.log('缓存清理完成');
+    } catch (error) {
+        await database.logMessage('error', '缓存清理失败: ' + error.message, 'system');
+    }
+});
+
+// 数据清理任务（每天凌晨2点）
+cron.schedule('0 2 * * *', async () => {
+    try {
+        const retentionDays = await database.getConfig('data_retention_days') || 30;
+        await database.cleanupOldData(parseInt(retentionDays));
+        console.log('数据清理完成');
+    } catch (error) {
+        await database.logMessage('error', '数据清理失败: ' + error.message, 'system');
+    }
 });
 
 // 优雅关闭处理
-process.on('SIGTERM', () => {
-    console.log('收到SIGTERM信号，正在优雅关闭...');
-    server.close(() => {
-        console.log('服务器已关闭');
-        process.exit(0);
-    });
-});
+async function gracefulShutdown(signal) {
+    console.log(`收到${signal}信号，正在优雅关闭...`);
+    
+    try {
+        // 关闭HTTP服务器
+        server.close(async () => {
+            console.log('HTTP服务器已关闭');
+            
+            // 关闭数据库连接
+            if (database) {
+                await database.close();
+            }
+            
+            // 卸载所有插件
+            if (pluginManager) {
+                for (const [name] of pluginManager.plugins.entries()) {
+                    try {
+                        await pluginManager.unloadPlugin(name);
+                    } catch (error) {
+                        console.error(`卸载插件失败 [${name}]:`, error);
+                    }
+                }
+            }
+            
+            console.log('所有资源已释放');
+            process.exit(0);
+        });
+    } catch (error) {
+        console.error('优雅关闭失败:', error);
+        process.exit(1);
+    }
+}
 
-process.on('SIGINT', () => {
-    console.log('收到SIGINT信号，正在优雅关闭...');
-    server.close(() => {
-        console.log('服务器已关闭');
-        process.exit(0);
-    });
-});
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // 全局错误处理
 process.on('uncaughtException', async (error) => {
-    await logError(error, '未捕获的异常');
+    if (database) {
+        await database.logMessage('error', '未捕获的异常: ' + error.message, 'system', null, null, null, error.stack);
+    }
     console.error('未捕获的异常，服务器将退出');
     process.exit(1);
 });
 
 process.on('unhandledRejection', async (reason, promise) => {
-    await logError(new Error(reason), '未处理的Promise拒绝');
+    if (database) {
+        await database.logMessage('error', '未处理的Promise拒绝: ' + reason, 'system');
+    }
     console.error('未处理的Promise拒绝:', reason);
 });
 
@@ -640,17 +848,26 @@ async function startServer() {
         await initializeData();
         
         server.listen(CONFIG.PORT, () => {
-            console.log(`AquaPanel优化版服务器运行在端口 ${CONFIG.PORT}`);
-            console.log(`访问地址: http://localhost:${CONFIG.PORT}`);
-            console.log('优化功能已启用:');
-            console.log('- 内存缓存系统');
-            console.log('- 增强错误处理');
-            console.log('- 登录失败限制');
-            console.log('- 性能数据缓存');
-            console.log('- 优雅关闭处理');
+            console.log(`🌊 AquaPanel v1.2.0-enterprise 服务器运行在端口 ${CONFIG.PORT}`);
+            console.log(`🌐 访问地址: http://localhost:${CONFIG.PORT}`);
+            console.log('🚀 企业级功能已启用:');
+            console.log('  ✅ SQLite数据库集成');
+            console.log('  ✅ 智能告警系统');
+            console.log('  ✅ 多用户权限管理');
+            console.log('  ✅ 插件系统架构');
+            console.log('  ✅ 邮件通知支持');
+            console.log('  ✅ 性能历史记录');
+            console.log('  ✅ 内存缓存优化');
+            console.log('  ✅ 增强安全防护');
+            console.log('  ✅ 优雅关闭处理');
+            console.log('  ✅ RESTful API');
+            console.log('📊 默认管理员: admin/admin123');
         });
     } catch (error) {
-        await logError(error, '服务器启动');
+        console.error('服务器启动失败:', error);
+        if (database) {
+            await database.logMessage('error', '服务器启动失败: ' + error.message, 'system');
+        }
         process.exit(1);
     }
 }
