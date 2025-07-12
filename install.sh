@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# AquaPanel 安装脚本
-# 版本: 1.0.0
+# AquaPanel 安装脚本 - 优化版
+# 版本: 1.1.0-optimized
 # 作者: AquaPanel Team
 
 set -e

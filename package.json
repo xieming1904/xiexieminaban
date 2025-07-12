@@ -1,16 +1,22 @@
 {
   "name": "aqua-panel",
-  "version": "1.0.0",
-  "description": "A modern server panel with liquid glass UI design",
+  "version": "1.2.0-enterprise",
+  "description": "A modern server panel with liquid glass UI design - Enterprise Edition",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "install-deps": "npm install"
+    "install-deps": "npm install",
+    "build": "echo 'Building AquaPanel...' && npm run install-deps",
+    "test": "echo 'Running tests...' && node app.js --test",
+    "production": "NODE_ENV=production node app.js"
   },
-  "keywords": ["server", "panel", "monitoring", "dashboard"],
+  "keywords": ["server", "panel", "monitoring", "dashboard", "glassmorphism", "liquid-glass", "enterprise", "alerts", "users", "plugins"],
   "author": "AquaPanel Team",
   "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "dependencies": {
     "express": "^4.18.2",
     "ws": "^8.14.2",
@@ -20,7 +26,12 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "body-parser": "^1.20.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "nodemailer": "^6.9.7",
+    "sqlite3": "^5.1.6",
+    "uuid": "^9.0.1",
+    "joi": "^17.11.0",
+    "helmet": "^7.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
